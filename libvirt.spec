@@ -3,6 +3,9 @@
 # This spec file assumes you are building on a Fedora or RHEL version
 # that's still supported by the vendor. It may work on other distros
 # or versions, but no effort will be made to ensure that going forward.
+%global with_selinux 1
+%global selinuxtype targeted
+%global modulename virt
 %define min_rhel 7
 %define min_fedora 31
 
@@ -222,7 +225,9 @@ URL: https://libvirt.org/
     %define mainturl stable_updates/
 %endif
 Source: https://libvirt.org/sources/%{?mainturl}libvirt-%{version}.tar.xz
-
+Source2: %{modulename}.te
+Source3: %{modulename}.if
+Source4: %{modulename}.fc
 Requires: libvirt-daemon = %{version}-%{release}
 Requires: libvirt-daemon-config-network = %{version}-%{release}
 Requires: libvirt-daemon-config-nwfilter = %{version}-%{release}
@@ -250,6 +255,12 @@ Requires: libvirt-daemon-driver-network = %{version}-%{release}
 Requires: libvirt-daemon-driver-nodedev = %{version}-%{release}
 Requires: libvirt-client = %{version}-%{release}
 Requires: libvirt-libs = %{version}-%{release}
+
+%if 0%{?with_selinux}
+# This ensures that the *-selinux package and all it’s dependencies are not pulled
+# into containers and other systems that do not use SELinux
+Requires:        (%{name}-selinux if selinux-policy-%{selinuxtype})
+%endif
 
 # All build-time requirements. Run-time requirements are
 # listed against each sub-RPM
@@ -975,6 +986,20 @@ Requires: libvirt-daemon-driver-network = %{version}-%{release}
 %description nss
 Libvirt plugin for NSS for translating domain names into IP addresses.
 
+%if 0%{?with_selinux}
+# SELinux subpackage
+%package selinux
+Summary: Libvirt SELinux policy
+
+Requires: selinux-policy-%{selinuxtype}
+Requires(post): selinux-policy-%{selinuxtype}
+BuildRequires: selinux-policy-devel
+BuildArch: noarch
+%{?selinux_requires}
+
+%description selinux
+SELinux policy module for libvirt.
+%endif
 
 %prep
 
@@ -1200,6 +1225,17 @@ export SOURCE_DATE_EPOCH=$(stat --printf='%Y' %{_specdir}/%{name}.spec)
            %{?arg_login_shell}
 
 %meson_build
+%if 0%{?with_selinux}
+# SELinux policy (originally from selinux-policy-contrib)
+# this policy module will override the production module
+mkdir selinux
+cp -p %{SOURCE2} selinux/
+cp -p %{SOURCE3} selinux/
+cp -p %{SOURCE4} selinux/
+
+make -f %{_datadir}/selinux/devel/Makefile %{modulename}.pp
+bzip2 -9 %{modulename}.pp
+%endif
 
 %install
 rm -fr %{buildroot}
@@ -1282,6 +1318,10 @@ mv $RPM_BUILD_ROOT%{_datadir}/systemtap/tapset/libvirt_probes.stp \
 mv $RPM_BUILD_ROOT%{_datadir}/systemtap/tapset/libvirt_qemu_probes.stp \
    $RPM_BUILD_ROOT%{_datadir}/systemtap/tapset/libvirt_qemu_probes-64.stp
     %endif
+%endif
+
+%if 0%{?with_selinux}
+install -D -m 0644 %{modulename}.pp.bz2 %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
 %endif
 
 %check
@@ -1484,6 +1524,24 @@ exit 0
 %pre login-shell
 getent group virtlogin >/dev/null || groupadd -r virtlogin
 exit 0
+%endif
+
+%if 0%{?with_selinux}
+# SELinux contexts are saved so that only affected files can be
+# relabeled after the policy module installation
+%pre selinux
+%selinux_relabel_pre -s %{selinuxtype}
+
+%post selinux
+%selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
+
+%postun selinux
+if [ $1 -eq 0 ]; then
+    %selinux_modules_uninstall -s %{selinuxtype} %{modulename}
+fi
+
+%posttrans selinux
+%selinux_relabel_post -s %{selinuxtype}
 %endif
 
 %files
@@ -1941,6 +1999,11 @@ exit 0
 %{_datadir}/libvirt/api/libvirt-qemu-api.xml
 %{_datadir}/libvirt/api/libvirt-lxc-api.xml
 
+%if 0%{?with_selinux}
+%files selinux
+%{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.*
+%ghost %{_sharedstatedir}/selinux/%{selinuxtype}/active/modules/200/%{modulename}
+%endif
 
 %changelog
 * Fri Dec 04 2020 Cole Robinson <aintdiscole@gmail.com> - 6.10.0-2.1
